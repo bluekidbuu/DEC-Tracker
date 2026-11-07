@@ -1,7 +1,6 @@
--- Depth Egg Chase Tracker (Event / Whirlpool / Boss) + Mini GUI
+-- Depth Egg Chase Tracker v2 (Event / Whirlpool / Boss + icons + boss announce)
 -- Webhook URL diisi lewat GUI dan disimpan lokal (dec_settings.json), bukan di file ini.
 
--- restart-safe: hentikan instance lama jika ada
 if getgenv().TRACKER_STOP then pcall(getgenv().TRACKER_STOP) end
 
 local Players = game:GetService("Players")
@@ -81,20 +80,91 @@ local function save()
     pcall(function() writefile(FILE, HttpService:JSONEncode(settings)) end)
 end
 
+----------------------------------------------------------------
+-- DATA
+----------------------------------------------------------------
 local ROLE = { event = "", whirlpool = "", boss = "" } -- contoh: "<@&123456789>"
 local BOT = { event = "Event Tracker", whirlpool = "Whirlpool Tracker", boss = "Boss Tracker" }
+
 local BOSS_NAME = {
-    Boss1 = "Reef Turtle", Boss2 = "Anchor Crab", Boss3 = "Kraken",
-    Boss4 = "Lantern Leviathan", Boss5 = "Ruin Titan",
+    Boss1 = "Reef Turtle", Boss2 = "Wreck Hermit", Boss3 = "Wreck Kraken",
+    Boss4 = "Abyss Angler", Boss5 = "Sunken Colossus",
+}
+local BOSS_IMG = {
+    Boss1 = "135969045489171", Boss2 = "91541828326228", Boss3 = "108629696919919",
+    Boss4 = "110716306093479", Boss5 = "73206167535657",
 }
 
+local ZONA = {
+    [1]="Sweetwater River",[2]="Coral Reef",[3]="Dark Abyss",[4]="Toxic Swamps",
+    [5]="Industrial Port",[6]="Oil Tank",[7]="Volcanic Pit",[8]="Electric Chasm",
+    [9]="Mythic Pit",[10]="Cosmos Origin",[11]="Primal Waters",[12]="Crystal Caverns",
+    [13]="Celestial Realm",[14]="Glitch Rift",[15]="Divine Throne",[16]="Eternal Ice",
+    [17]="Sunken Atlantis",[18]="Shadow Realm",[19]="Star Forge",[20]="Infinity Core",
+}
+local ZONE_IMG = {
+    [1]="96751112953590",[2]="124745314407800",[3]="99759987820688",[4]="138223515590070",
+    [5]="127009423028934",[6]="101374565815446",[7]="110693852627398",[8]="101162427941327",
+    [9]="129859817996825",[10]="113754142641639",[11]="125747812176467",[12]="125359547158980",
+    [13]="84216613170087",[14]="83809169356358",[15]="113016186681166",[16]="139671950305375",
+    [17]="113236757283093",[18]="121305240478494",[19]="107389957846847",[20]="94603751918890",
+}
+
+local EVENT_IMG = {
+    Galaxy="104364450871096", Rainbow="75914146300571", Cyber="117130703313612",
+    Dragon="79544478110435", Meow="121714187311045", Blizzard="113271520069988",
+    SugarRush="125430530884874", StarShower="82455943848103", Party="129677202517494",
+    GhostShip="124460078953936",
+}
+local EEMOJI = {Galaxy="🌌", Rainbow="🌈", Cyber="🤖", Dragon="🐉", Meow="🐱",
+    Blizzard="❄️", SugarRush="🍭", StarShower="🌠", Party="🪩", GhostShip="👻"}
+local EICON = {Galaxy="1f30c", Rainbow="1f308", Cyber="1f916", Dragon="1f409",
+    Meow="1f431", Blizzard="2744", SugarRush="1f36d", StarShower="1f320",
+    Party="1faa9", GhostShip="1f47b"}
+
 ----------------------------------------------------------------
--- SENDER
+-- ICONS + SENDER
 ----------------------------------------------------------------
+local TWEMOJI = "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/%s.png"
+local iconCache = {}
+
+local function iconUrl(id)
+    id = tostring(id or ""):match("%d+")
+    if not id or not req then return nil end
+    if iconCache[id] ~= nil then return iconCache[id] or nil end
+    local pending = false
+    for attempt = 1, 2 do
+        local ok, res = pcall(req, {
+            Url = "https://thumbnails.roblox.com/v1/assets?assetIds=" .. id .. "&size=420x420&format=Png",
+            Method = "GET",
+        })
+        if not (ok and res and res.Body) then break end
+        local ok2, d = pcall(HttpService.JSONDecode, HttpService, res.Body)
+        local e = ok2 and type(d) == "table" and d.data and d.data[1]
+        if e and e.state == "Completed" and e.imageUrl and e.imageUrl ~= "" then
+            iconCache[id] = e.imageUrl
+            return e.imageUrl
+        elseif e and e.state == "Pending" and attempt == 1 then
+            pending = true
+            task.wait(1.5)
+        else
+            pending = false
+            break
+        end
+    end
+    if not pending then iconCache[id] = false end
+    return nil
+end
+
 local MAP = {event = "Event", whirlpool = "Whirlpool", boss = "Boss"}
 
 local function validUrl(u)
     return type(u) == "string" and u:find("^https://[%w%.]*discord[%w%.]*/api/webhooks/") ~= nil
+end
+
+local function serverInfo()
+    local jid = game.JobId ~= "" and game.JobId:sub(1, 8) or "studio"
+    return #Players:GetPlayers() .. "/" .. Players.MaxPlayers .. " players • " .. jid
 end
 
 local function send(cat, embed, force)
@@ -102,8 +172,20 @@ local function send(cat, embed, force)
     if not force and not settings[MAP[cat] .. "On"] then return end
     local url = settings[MAP[cat] .. "Webhook"]
     if not validUrl(url) then return end
-    embed.timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
+
     task.spawn(function()
+        embed.timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
+        local thumb = embed.asset and iconUrl(embed.asset)
+        if not thumb and embed.icon then thumb = TWEMOJI:format(embed.icon) end
+        if thumb then embed.thumbnail = {url = thumb} end
+        local banner = embed.banner and iconUrl(embed.banner)
+        if banner then embed.image = {url = banner} end
+        embed.asset, embed.icon, embed.banner = nil, nil, nil
+
+        embed.author = embed.author or {name = BOT[cat]}
+        local f = embed.footer and embed.footer.text or ""
+        embed.footer = {text = (f ~= "" and (f .. " • ") or "") .. serverInfo()}
+
         pcall(req, {
             Url = url, Method = "POST",
             Headers = {["Content-Type"] = "application/json"},
@@ -133,8 +215,6 @@ safe("Event", function()
 
     local PANTAU = {Galaxy=1, Rainbow=1, Cyber=1, Dragon=1, Meow=1,
         Blizzard=1, SugarRush=1, StarShower=1, Party=1, GhostShip=1}
-    local EEMOJI = {Galaxy="🌌", Rainbow="🌈", Cyber="🤖", Dragon="🐉", Meow="🐱",
-        Blizzard="❄️", SugarRush="🍭", StarShower="🌠", Party="🪩", GhostShip="👻"}
 
     local aktif = {}
     local function cekEvent(id)
@@ -167,12 +247,16 @@ safe("Event", function()
                 title = emoji .. "  " .. nama .. " Event Started",
                 description = "A live event is now active in this server.",
                 color = color3(e and e.Color), fields = fields,
+                asset = EVENT_IMG[id], icon = EICON[id],
                 footer = {text = "Live Events"},
             })
         elseif not on and aktif[id] then
             aktif[id] = nil
-            send("event", {title = "⌛  " .. nama .. " Event Ended", color = 9807270,
-                footer = {text = "Live Events"}})
+            send("event", {
+                title = "⌛  " .. nama .. " Event Ended", color = 9807270,
+                asset = EVENT_IMG[id], icon = EICON[id],
+                footer = {text = "Live Events"},
+            })
         end
     end
 
@@ -191,17 +275,10 @@ safe("Event", function()
 end)
 
 ----------------------------------------------------------------
--- 2) WHIRLPOOL
+-- 2) WHIRLPOOL (banner = gambar zona)
 ----------------------------------------------------------------
 local nW = 0
 safe("Whirlpool", function()
-    local ZONA = {
-        [1]="Fresh River",[2]="Coral Reef",[3]="Dark Abyss",[4]="Toxic Swamp",
-        [5]="Industrial Port",[6]="Oil Tank",[7]="Volcanic Pit",[8]="Storm Abyss",
-        [9]="Mythic Pit",[10]="Cosmos Origin",[11]="Primal Waters",[12]="Crystal Caverns",
-        [13]="Celestial Realm",[14]="Glitch Rift",[15]="Divine Throne",[16]="Frozen Eternity",
-        [17]="Sunken Atlantis",[18]="Shadow Realm",[19]="Star Forge",[20]="Infinity Core"
-    }
     local WFILTER = {Legendary = true, Mythic = true, Secret = true}
     local WCOLOR = {Legendary = 16766720, Mythic = 11141375, Secret = 16777215}
     local WEMOJI = {Legendary = "🟡", Mythic = "🟣", Secret = "⚪"}
@@ -224,19 +301,18 @@ safe("Whirlpool", function()
         lastW, lastWT = k, tick()
 
         table.sort(list, function(a, b) return WRANK[a.rarity] > WRANK[b.rarity] end)
-        local fields = {}
+        local lines = {}
         for _, s in ipairs(list) do
-            fields[#fields+1] = {
-                name = WEMOJI[s.rarity] .. "  " .. s.rarity,
-                value = "📍 **" .. (ZONA[s.zoneId] or ("Zone " .. tostring(s.zoneId))) .. "**",
-                inline = true,
-            }
+            lines[#lines+1] = WEMOJI[s.rarity] .. " **" .. s.rarity .. "**  ›  "
+                .. (ZONA[s.zoneId] or ("Zone " .. tostring(s.zoneId)))
         end
         send("whirlpool", {
-            title = "🌀  Rare Whirlpool Spawned",
-            description = "Resets every 5 minutes. Highest rarity: **" .. best .. "**",
-            color = WCOLOR[best], fields = fields,
-            footer = {text = "Whirlpool Reset"},
+            title = "🌀  Rare Whirlpool",
+            description = table.concat(lines, "\n") .. "\n\n*Resets every 5 minutes*",
+            color = WCOLOR[best],
+            banner = ZONE_IMG[list[1].zoneId],
+            icon = "1f300",
+            footer = {text = "Highest: " .. best},
         })
     end
 
@@ -248,15 +324,15 @@ safe("Whirlpool", function()
 end)
 
 ----------------------------------------------------------------
--- 3) BOSS
+-- 3) BOSS (fight dimulai)
 ----------------------------------------------------------------
 local nB = 0
+local BCOLOR = {Easy=5763719, Fierce=16753920, Strong=15105570, Legendary=16766720, Mythic=11141375}
 safe("Boss", function()
     local bcfg = safeRequire(RS.Shared.Config.BossConfig)
     assert(bcfg, "BossConfig tidak bisa dibaca")
     local tier = {}
     for _, b in ipairs(bcfg.BOSSES) do tier[b.Id] = b.Tier end
-    local BCOLOR = {Easy=5763719, Fierce=16753920, Strong=15105570, Legendary=16766720, Mythic=11141375}
     local BEMOJI = {Easy="🟢", Fierce="🟠", Strong="🔴", Legendary="🟡", Mythic="🟣"}
     local lastB = {}
 
@@ -268,11 +344,11 @@ safe("Boss", function()
         local t = tier[id]
         send("boss", {
             title = "👹  Boss Fight: " .. (BOSS_NAME[id] or id),
-            description = "A boss has appeared in the Boss sea!",
+            description = "> **" .. (BOSS_NAME[id] or id) .. "** has appeared!\n> Tier: **" .. t .. "**",
             color = BCOLOR[t] or 15158332,
+            asset = BOSS_IMG[id], icon = "1f479",
             fields = {
                 {name = (BEMOJI[t] or "") .. " Tier", value = t, inline = true},
-                {name = "🆔 ID", value = id, inline = true},
                 {name = "⚔️ Fight", value = bcfg.FIGHT_SECONDS .. " sec", inline = true},
                 {name = "⏳ Ends", value = "<t:" .. (os.time() + bcfg.FIGHT_SECONDS) .. ":R>", inline = true},
                 {name = "🎁 Chests", value = tostring(bcfg.CHESTS_BY_TIER[t] or "?"), inline = true},
@@ -291,7 +367,7 @@ safe("Boss", function()
     for _, r in ipairs(findRemotes("BossRewarded")) do
         hook(r, function()
             send("boss", {title = "🏆  Boss Defeated", description = "Rewards have been distributed.",
-                color = 9807270, footer = {text = "Boss Tracker"}})
+                color = 9807270, icon = "1f3c6", footer = {text = "Boss Tracker"}})
         end)
     end
 
@@ -306,10 +382,96 @@ safe("Boss", function()
 end)
 
 ----------------------------------------------------------------
--- 4) ANTI-AFK (terpisah, gagal tidak memengaruhi tracker)
+-- 3b) BOSS ANNOUNCE (fase Announced, ~1 menit sebelum)
+----------------------------------------------------------------
+safe("BossAnnounce", function()
+    local lastKey
+    local function check()
+        if not alive then return end
+        if workspace:GetAttribute("BossPhase") ~= "Announced" then return end
+        local id = workspace:GetAttribute("BossId")
+        local tier = workspace:GetAttribute("BossTier")
+        local ends = workspace:GetAttribute("BossPhaseEndsAt")
+        if type(id) ~= "string" or type(ends) ~= "number" then return end
+        local left = ends - workspace:GetServerTimeNow()
+        if left <= 0 then return end
+
+        local key = id .. tostring(ends)
+        if key == lastKey then return end
+        lastKey = key
+
+        send("boss", {
+            title = "⏰  Boss incoming: " .. (BOSS_NAME[id] or id),
+            description = "The fight starts <t:" .. (os.time() + math.floor(left)) .. ":R>. Get ready!",
+            color = BCOLOR[tier] or 16753920,
+            asset = BOSS_IMG[id], icon = "23f0",
+            fields = {
+                {name = "🏷 Tier", value = tostring(tier or "?"), inline = true},
+                {name = "⏳ Starts in", value = math.floor(left) .. " sec", inline = true},
+            },
+            footer = {text = "Boss Warning"},
+        })
+    end
+
+    local function later() task.delay(0.5, function() pcall(check) end) end
+    track(workspace:GetAttributeChangedSignal("BossPhase"):Connect(later))
+    track(workspace:GetAttributeChangedSignal("BossPhaseEndsAt"):Connect(later))
+    pcall(check)
+    spawnLoop(function()
+        while alive do task.wait(5) pcall(check) end
+    end)
+end)
+
+----------------------------------------------------------------
+-- 3c) SCHEDULES (peringatan sebelum jadwal, dari atribut waktu game)
+----------------------------------------------------------------
+safe("Schedules", function()
+    local de = RS:FindFirstChild("DragonEvent")
+
+    -- lead = berapa detik sebelum jadwal pesan dikirim (nil = dimatikan)
+    local SRC = {
+        {key="Dragon", obj=de, attr="NextAutoAt", lead=60, cat="event",
+         title="🐉  Dragon event starting soon", color=16737573,
+         asset=EVENT_IMG.Dragon, icon="1f409"},
+        {key="Whirl", find=function() return workspace:FindFirstChild("FishingSpots") end,
+         attr="NextResetAt", lead=nil, cat="whirlpool",
+         title="🌀  Whirlpool reset soon", color=5793266, icon="1f300"},
+        {key="Boss", obj=workspace, attr="BossNextAt", lead=nil, cat="boss",
+         title="⏰  Boss spawning soon", color=16753920, icon="23f0"},
+    }
+
+    local sent = {}
+    spawnLoop(function()
+        while alive do
+            task.wait(2)
+            local now = workspace:GetServerTimeNow()
+            for _, s in ipairs(SRC) do
+                local o = s.obj or (s.find and s.find())
+                if s.lead and o then
+                    local t = o:GetAttribute(s.attr)
+                    if type(t) == "number" then
+                        local left = t - now
+                        if left > 0 and left <= s.lead and sent[s.key] ~= t then
+                            sent[s.key] = t
+                            send(s.cat, {
+                                title = s.title,
+                                description = "Starts <t:" .. (os.time() + math.floor(left)) .. ":R>",
+                                color = s.color, asset = s.asset, icon = s.icon,
+                                footer = {text = "Schedule"},
+                            })
+                        end
+                    end
+                end
+            end
+        end
+    end)
+end)
+
+----------------------------------------------------------------
+-- 4) ANTI-AFK
 ----------------------------------------------------------------
 safe("AntiAFK", function()
-    local vu = game:GetService("VirtualUser") -- error bila tidak ada -> status FAIL
+    local vu = game:GetService("VirtualUser")
     track(Players.LocalPlayer.Idled:Connect(function()
         if not alive or not settings.AntiAFK then return end
         pcall(function()
@@ -387,9 +549,8 @@ safe("GUI", function()
         body.Visible = not collapsed
         main.Size = UDim2.fromOffset(270, collapsed and 35 or FULL_H)
     end)
-    closeBtn.MouseButton1Click:Connect(stop) -- menghentikan SEMUA
+    closeBtn.MouseButton1Click:Connect(stop)
 
-    -- drag
     local dragging, dragStart, startPos
     header.InputBegan:Connect(function(i)
         if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -473,7 +634,7 @@ safe("GUI", function()
     makeInput("BOSS WEBHOOK", 224, "BossWebhook")
 
     local test = Instance.new("TextButton")
-    test.Size = UDim2.new(1, -24, 0, 26)
+    test.Size = UDim2.new(0.5, -18, 0, 26)
     test.Position = UDim2.fromOffset(12, 278)
     test.BackgroundColor3 = Color3.fromRGB(45, 90, 160)
     test.Text, test.TextSize, test.Font = "Send test", 11, Enum.Font.GothamBold
@@ -481,11 +642,64 @@ safe("GUI", function()
     test.Parent = body
     Instance.new("UICorner", test).CornerRadius = UDim.new(0, 6)
     test.MouseButton1Click:Connect(function()
-        for cat in pairs(MAP) do
-            send(cat, {title = "✅ Test " .. cat, description = "Webhook connected.", color = 5763719}, true)
-        end
+        send("event", {title = "✅ Test Event: Galaxy", description = "Webhook connected.",
+            color = 5763719, asset = EVENT_IMG.Galaxy, icon = "1f30c"}, true)
+        send("whirlpool", {title = "✅ Test Whirlpool", description = "🟡 **Legendary**  ›  " .. ZONA[9],
+            color = 16766720, banner = ZONE_IMG[9], icon = "1f300"}, true)
+        send("boss", {title = "✅ Test Boss: " .. BOSS_NAME.Boss4, description = "Webhook connected.",
+            color = 16766720, asset = BOSS_IMG.Boss4, icon = "1f479"}, true)
         test.Text = "Sent!"
         task.delay(1.5, function() if alive then test.Text = "Send test" end end)
+    end)
+
+    local full = Instance.new("TextButton")
+    full.Size = UDim2.new(0.5, -18, 0, 26)
+    full.Position = UDim2.new(0.5, 6, 0, 278)
+    full.BackgroundColor3 = Color3.fromRGB(95, 70, 160)
+    full.Text, full.TextSize, full.Font = "Full test", 11, Enum.Font.GothamBold
+    full.TextColor3 = Color3.new(1, 1, 1)
+    full.Parent = body
+    Instance.new("UICorner", full).CornerRadius = UDim.new(0, 6)
+    full.MouseButton1Click:Connect(function()
+        task.spawn(function()
+            -- Boss incoming (1 menit sebelum)
+            send("boss", {
+                title = "⏰  Test Boss incoming: " .. BOSS_NAME.Boss4,
+                description = "The fight starts <t:" .. (os.time() + 60) .. ":R>. Get ready!",
+                color = BCOLOR.Legendary, asset = BOSS_IMG.Boss4, icon = "23f0",
+                fields = {
+                    {name = "🏷 Tier", value = "Legendary", inline = true},
+                    {name = "⏳ Starts in", value = "60 sec", inline = true},
+                },
+                footer = {text = "Boss Warning"},
+            }, true)
+            task.wait(0.6)
+            -- Whirlpool dengan beberapa rarity
+            send("whirlpool", {
+                title = "🌀  Test Rare Whirlpool",
+                description = "⚪ **Secret**  ›  " .. ZONA[19] .. "\n🟣 **Mythic**  ›  " .. ZONA[10]
+                    .. "\n🟡 **Legendary**  ›  " .. ZONA[9] .. "\n\n*Resets every 5 minutes*",
+                color = 16777215, banner = ZONE_IMG[19], icon = "1f300",
+                footer = {text = "Highest: Secret"},
+            }, true)
+            task.wait(0.6)
+            -- Dragon segera mulai
+            send("event", {
+                title = "🐉  Test Dragon event starting soon",
+                description = "Starts <t:" .. (os.time() + 60) .. ":R>",
+                color = 16737573, asset = EVENT_IMG.Dragon, icon = "1f409",
+                footer = {text = "Schedule"},
+            }, true)
+            task.wait(0.6)
+            -- Event berakhir
+            send("event", {
+                title = "⌛  Test Galaxy Event Ended", color = 9807270,
+                asset = EVENT_IMG.Galaxy, icon = EICON.Galaxy,
+                footer = {text = "Live Events"},
+            }, true)
+        end)
+        full.Text = "Sent!"
+        task.delay(1.5, function() if alive then full.Text = "Full test" end end)
     end)
 
     label(body, "Event:" .. tostring(status.Event) .. "  Whirl:" .. tostring(status.Whirlpool)
@@ -497,7 +711,8 @@ pcall(function()
     game:GetService("StarterGui"):SetCore("SendNotification", {
         Title = "Tracker aktif",
         Text = "Event:" .. tostring(status.Event) .. " Whirl:" .. tostring(status.Whirlpool)
-            .. " Boss:" .. tostring(status.Boss) .. " AFK:" .. tostring(status.AntiAFK),
+            .. " Boss:" .. tostring(status.Boss) .. " Announce:" .. tostring(status.BossAnnounce)
+            .. " AFK:" .. tostring(status.AntiAFK),
         Duration = 8,
     })
 end)
