@@ -66,7 +66,7 @@ end
 ----------------------------------------------------------------
 local FILE = "dec_settings.json"
 local settings = {
-    EventOn = true, WhirlpoolOn = true, BossOn = true, AntiAFK = false,
+    EventOn = true, WhirlpoolOn = true, BossOn = true, AntiAFK = false, ESPOn = false,
     EventWebhook = "", WhirlpoolWebhook = "", BossWebhook = "",
 }
 pcall(function()
@@ -158,6 +158,38 @@ end
 
 local MAP = {event = "Event", whirlpool = "Whirlpool", boss = "Boss"}
 
+----------------------------------------------------------------
+-- GAMBAR: gambar UI Roblox tidak tampil di Discord, jadi dipakai gambar dari GitHub.
+-- Taruh PNG di folder icons/ repo, lalu isi IMG_BASE. Kosong = emoji saja.
+-- Nama file: event_Galaxy.png, boss_Boss4.png, zone_9.png (huruf besar/kecil berpengaruh)
+----------------------------------------------------------------
+local IMG_BASE = "https://raw.githubusercontent.com/bluekidbuu/DEC-Tracker/main/icons/"
+local USE_ROBLOX_IMG = false -- API thumbnail Roblox: gambar UI game rusak di Discord
+
+local IMG_FILE = {}
+for k, v in pairs(EVENT_IMG) do IMG_FILE[v] = "event_" .. k .. ".png" end
+for k, v in pairs(BOSS_IMG) do IMG_FILE[v] = "boss_" .. k .. ".png" end
+for k, v in pairs(ZONE_IMG) do IMG_FILE[v] = "zone_" .. k .. ".png" end
+
+local fileOk = {}
+local function hasFile(url)
+    if fileOk[url] ~= nil then return fileOk[url] end
+    local ok, res = pcall(req, {Url = url, Method = "GET"})
+    fileOk[url] = (ok and res and res.StatusCode == 200) and true or false
+    return fileOk[url]
+end
+
+local function imgFor(id)
+    id = tostring(id or ""):match("%d+")
+    if not id then return nil end
+    if IMG_BASE ~= "" and IMG_FILE[id] then
+        local url = IMG_BASE .. IMG_FILE[id]
+        if hasFile(url) then return url end
+    end
+    if USE_ROBLOX_IMG then return iconUrl(id) end
+    return nil
+end
+
 local function validUrl(u)
     return type(u) == "string" and u:find("^https://[%w%.]*discord[%w%.]*/api/webhooks/") ~= nil
 end
@@ -175,10 +207,10 @@ local function send(cat, embed, force)
 
     task.spawn(function()
         embed.timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
-        local thumb = embed.asset and iconUrl(embed.asset)
+        local thumb = embed.asset and imgFor(embed.asset)
         if not thumb and embed.icon then thumb = TWEMOJI:format(embed.icon) end
         if thumb then embed.thumbnail = {url = thumb} end
-        local banner = embed.banner and iconUrl(embed.banner)
+        local banner = embed.banner and imgFor(embed.banner)
         if banner then embed.image = {url = banner} end
         embed.asset, embed.icon, embed.banner = nil, nil, nil
 
@@ -285,6 +317,29 @@ safe("Whirlpool", function()
     local WRANK = {Legendary = 1, Mythic = 2, Secret = 3}
     local lastW, lastWT = "", 0
 
+    -- baca metadata spot (Tier / Dragon / ZoneId) seperti di script ESP, hanya baca
+    local function spotSummary()
+        local fs = workspace:FindFirstChild("FishingSpots")
+        if not fs then return nil end
+        local high, dragon = {}, 0
+        for _, s in ipairs(fs:GetChildren()) do
+            if s:GetAttribute("Dragon") == true then dragon += 1 end
+            local tier = s:GetAttribute("Tier")
+            if type(tier) == "string" and tier ~= "Common" and tier ~= "Rare" and tier ~= "Epic" then
+                local zid = tonumber(s:GetAttribute("ZoneId"))
+                local z = (zid and ZONA[zid]) or ("Zone " .. tostring(s:GetAttribute("ZoneId")))
+                local k = tier .. "  ›  " .. z
+                high[k] = (high[k] or 0) + 1
+            end
+        end
+        local lines = {}
+        for k, n in pairs(high) do lines[#lines+1] = k .. (n > 1 and ("  ×" .. n) or "") end
+        table.sort(lines)
+        if dragon > 0 then lines[#lines+1] = "🐉 Dragon spots: " .. dragon end
+        if #lines == 0 then return nil end
+        return table.concat(lines, "\n"):sub(1, 900)
+    end
+
     local function whirlpool(data)
         if type(data) ~= "table" or type(data.spots) ~= "table" then return end
         local list, key, best = {}, {}, nil
@@ -306,14 +361,20 @@ safe("Whirlpool", function()
             lines[#lines+1] = WEMOJI[s.rarity] .. " **" .. s.rarity .. "**  ›  "
                 .. (ZONA[s.zoneId] or ("Zone " .. tostring(s.zoneId)))
         end
-        send("whirlpool", {
-            title = "🌀  Rare Whirlpool",
-            description = table.concat(lines, "\n") .. "\n\n*Resets every 5 minutes*",
-            color = WCOLOR[best],
-            banner = ZONE_IMG[list[1].zoneId],
-            icon = "1f300",
-            footer = {text = "Highest: " .. best},
-        })
+        local topZone, bestName = list[1].zoneId, best
+        task.delay(1.5, function()
+            if not alive then return end
+            local extra = spotSummary()
+            send("whirlpool", {
+                title = "🌀  Rare Whirlpool",
+                description = table.concat(lines, "\n") .. "\n\n*Resets every 5 minutes*",
+                color = WCOLOR[bestName],
+                banner = ZONE_IMG[topZone],
+                icon = "1f300",
+                fields = extra and {{name = "📍 Spots now", value = extra, inline = false}} or nil,
+                footer = {text = "Highest: " .. bestName},
+            })
+        end)
     end
 
     for _, r in ipairs(findRemotes("RareSpotsSpawned")) do
@@ -468,6 +529,117 @@ safe("Schedules", function()
 end)
 
 ----------------------------------------------------------------
+-- 3d) ESP SPOT WHIRLPOOL (toggle di GUI, hanya membaca atribut spot)
+----------------------------------------------------------------
+safe("ESP", function()
+    local pg = Players.LocalPlayer:WaitForChild("PlayerGui")
+    local spots = workspace:WaitForChild("FishingSpots", 10)
+    assert(spots, "FishingSpots tidak ada")
+
+    -- 1 = semua, 2 = Rare+, 3 = Epic+, 4 = Legendary+, 5 = Mythic+
+    local MIN_RANK, MAX_LABELS, MAX_RANGE = 2, 36, 1200
+    local ranks = {Common=1, Rare=2, Epic=3, Legendary=4, Mythic=5, Secret=6}
+    local colors = {
+        Common = Color3.fromRGB(205,215,225), Rare = Color3.fromRGB(95,177,255),
+        Epic = Color3.fromRGB(198,112,255), Legendary = Color3.fromRGB(255,205,82),
+        Mythic = Color3.fromRGB(255,90,220), Secret = Color3.fromRGB(255,255,255),
+    }
+    local labels = {}
+
+    local function anchorOf(spot)
+        local c = spot:FindFirstChild("Centre")
+        if c and (c:IsA("BasePart") or c:IsA("Attachment")) then return c end
+        local p = spot:FindFirstChild("FishPrompt", true)
+        if p and p.Parent and (p.Parent:IsA("BasePart") or p.Parent:IsA("Attachment")) then return p.Parent end
+        return spot:FindFirstChildWhichIsA("BasePart", true)
+    end
+    local function posOf(a) return a:IsA("Attachment") and a.WorldPosition or a.Position end
+
+    local function clear(spot)
+        local ui = labels[spot]
+        if ui then labels[spot] = nil pcall(function() ui:Destroy() end) end
+    end
+    local function clearAll()
+        for sp in pairs(labels) do clear(sp) end
+    end
+
+    local function make(anchor)
+        local bill = Instance.new("BillboardGui")
+        bill.Name = "DEC_SpotLabel"
+        bill.Adornee = anchor
+        bill.Size = UDim2.fromOffset(190, 48)
+        bill.StudsOffsetWorldSpace = Vector3.new(0, 3, 0)
+        bill.AlwaysOnTop = true
+        bill.ResetOnSpawn = false
+        bill.Parent = pg
+        local t = Instance.new("TextLabel")
+        t.Name = "T"
+        t.Size = UDim2.fromScale(1, 1)
+        t.BackgroundColor3 = Color3.fromRGB(18, 25, 36)
+        t.BackgroundTransparency = 0.15
+        t.BorderSizePixel = 0
+        t.TextSize = 13
+        t.Font = Enum.Font.GothamBold
+        t.TextWrapped = true
+        t.Parent = bill
+        Instance.new("UICorner", t).CornerRadius = UDim.new(0, 6)
+        return bill
+    end
+
+    local function refresh()
+        local char = Players.LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+        local chosen = {}
+        for _, spot in ipairs(spots:GetChildren()) do
+            local tier = spot:GetAttribute("Tier")
+            if type(tier) == "string" then
+                local dragon = spot:GetAttribute("Dragon") == true
+                local rank = ranks[tier] or 5
+                if dragon or rank >= MIN_RANK then
+                    local a = anchorOf(spot)
+                    if a then
+                        local d = (posOf(a) - root.Position).Magnitude
+                        if d <= MAX_RANGE then
+                            chosen[#chosen+1] = {spot=spot, a=a, d=d, tier=tier, dragon=dragon}
+                        end
+                    end
+                end
+            end
+        end
+        table.sort(chosen, function(x, y) return x.d < y.d end)
+
+        local keep = {}
+        for i = 1, math.min(#chosen, MAX_LABELS) do
+            local c = chosen[i]
+            keep[c.spot] = true
+            local bill = labels[c.spot]
+            if not bill then bill = make(c.a) labels[c.spot] = bill end
+            bill.Adornee = c.a
+            local t = bill:FindFirstChild("T")
+            if t then
+                local zid = tonumber(c.spot:GetAttribute("ZoneId"))
+                t.Text = (c.dragon and "DRAGON | " or "") .. c.tier
+                    .. "\n" .. (ZONA[zid] or ("Zone " .. tostring(zid))) .. " | " .. math.floor(c.d + 0.5) .. " studs"
+                t.TextColor3 = c.dragon and Color3.fromRGB(255, 113, 117) or (colors[c.tier] or colors.Mythic)
+            end
+        end
+        for spot in pairs(labels) do
+            if not keep[spot] then clear(spot) end
+        end
+    end
+
+    track({Disconnect = clearAll}) -- dibersihkan saat stop()
+    track(spots.ChildRemoved:Connect(clear))
+    spawnLoop(function()
+        while alive do
+            if settings.ESPOn then pcall(refresh) else clearAll() end
+            task.wait(0.85)
+        end
+    end)
+end)
+
+----------------------------------------------------------------
 -- 4) ANTI-AFK
 ----------------------------------------------------------------
 safe("AntiAFK", function()
@@ -490,7 +662,7 @@ safe("GUI", function()
     gui.ResetOnSpawn = false
     gui.Parent = (gethui and gethui()) or game:GetService("CoreGui")
 
-    local FULL_H = 345
+    local FULL_H = 371
     local main = Instance.new("Frame")
     main.Size = UDim2.fromOffset(270, FULL_H)
     main.Position = UDim2.new(0.5, -135, 0.5, -FULL_H / 2)
@@ -628,14 +800,15 @@ safe("GUI", function()
     makeToggle("Whirlpool tracker", 34, "WhirlpoolOn")
     makeToggle("Boss tracker", 60, "BossOn")
     makeToggle("Anti-AFK" .. (status.AntiAFK == "FAIL" and " (unsupported)" or ""), 86, "AntiAFK")
+    makeToggle("ESP spot tier" .. (status.ESP == "FAIL" and " (error)" or ""), 112, "ESPOn")
 
-    makeInput("EVENT WEBHOOK", 120, "EventWebhook")
-    makeInput("WHIRLPOOL WEBHOOK", 172, "WhirlpoolWebhook")
-    makeInput("BOSS WEBHOOK", 224, "BossWebhook")
+    makeInput("EVENT WEBHOOK", 146, "EventWebhook")
+    makeInput("WHIRLPOOL WEBHOOK", 198, "WhirlpoolWebhook")
+    makeInput("BOSS WEBHOOK", 250, "BossWebhook")
 
     local test = Instance.new("TextButton")
     test.Size = UDim2.new(0.5, -18, 0, 26)
-    test.Position = UDim2.fromOffset(12, 278)
+    test.Position = UDim2.fromOffset(12, 304)
     test.BackgroundColor3 = Color3.fromRGB(45, 90, 160)
     test.Text, test.TextSize, test.Font = "Send test", 11, Enum.Font.GothamBold
     test.TextColor3 = Color3.new(1, 1, 1)
@@ -654,7 +827,7 @@ safe("GUI", function()
 
     local full = Instance.new("TextButton")
     full.Size = UDim2.new(0.5, -18, 0, 26)
-    full.Position = UDim2.new(0.5, 6, 0, 278)
+    full.Position = UDim2.new(0.5, 6, 0, 304)
     full.BackgroundColor3 = Color3.fromRGB(95, 70, 160)
     full.Text, full.TextSize, full.Font = "Full test", 11, Enum.Font.GothamBold
     full.TextColor3 = Color3.new(1, 1, 1)
@@ -703,7 +876,7 @@ safe("GUI", function()
     end)
 
     label(body, "Event:" .. tostring(status.Event) .. "  Whirl:" .. tostring(status.Whirlpool)
-        .. "  Boss:" .. tostring(status.Boss), UDim2.new(1, -20, 0, 14), UDim2.fromOffset(12, 308),
+        .. "  Boss:" .. tostring(status.Boss), UDim2.new(1, -20, 0, 14), UDim2.fromOffset(12, 334),
         Color3.fromRGB(130, 140, 155))
 end)
 
